@@ -1,0 +1,117 @@
+x-superset-image: &superset-image superset-custom
+x-superset-depends-on: &superset-depends-on
+  - db
+  - redis
+x-superset-volumes: &superset-volumes
+  - ./docker:/app/docker
+  - superset_home:/app/superset_home
+  - ./docker/pythonpath_dev/superset_config_docker.py:/app/pythonpath/superset_config_docker.py
+
+services:
+  redis:
+    image: redis:7
+    container_name: superset_cache
+    restart: unless-stopped
+    volumes:
+      - redis:/data
+  nginx:
+    image: nginx:latest
+    container_name: nginx_reverse_proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - superset
+      - jmix_database
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  db:
+    env_file: docker/.env-non-dev
+    image: postgres:15
+    container_name: superset_db
+    restart: unless-stopped
+    volumes:
+      - db_home:/var/lib/postgresql/data
+      - ./docker/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+
+  superset:
+    env_file: docker/.env-non-dev
+    build: .
+    image: *superset-image
+    container_name: superset_app
+    command: ["/app/docker/docker-bootstrap.sh", "app-gunicorn"]
+    user: "root"
+    restart: unless-stopped
+    ports:
+      - 8088:8088
+    depends_on: *superset-depends-on
+    volumes: *superset-volumes
+    extra_hosts:
+      - "keycloak.local:host-gateway"
+  superset-init:
+    build: .
+    image: *superset-image
+    container_name: superset_init
+    command: ["/app/docker/docker-init.sh"]
+    env_file: docker/.env-non-dev
+    depends_on: *superset-depends-on
+    user: "root"
+    volumes: *superset-volumes
+    healthcheck:
+      disable: true
+    
+  superset-worker:
+    build: .
+    image: *superset-image
+    container_name: superset_worker
+    command: ["/app/docker/docker-bootstrap.sh", "worker"]
+    env_file: docker/.env-non-dev
+    restart: unless-stopped
+    depends_on: *superset-depends-on
+    user: "root"
+    volumes: *superset-volumes
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME"
+        ]
+    extra_hosts:
+      - "keycloak.local:host-gateway"
+
+
+  superset-worker-beat:
+    build: .
+    image: *superset-image
+    container_name: superset_worker_beat
+    command: ["/app/docker/docker-bootstrap.sh", "beat"]
+    env_file: docker/.env-non-dev
+    restart: unless-stopped
+    depends_on: *superset-depends-on
+    user: "root"
+    volumes: *superset-volumes
+    healthcheck:
+      disable: true
+    extra_hosts:
+      - "keycloak.local:host-gateway"
+
+
+  jmix_database:
+    image: postgres:16.3
+    container_name: jmix_database
+    ports:
+      - 5433:5432
+    environment:
+      POSTGRES_DB: onboarding
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root
+
+volumes:
+  superset_home:
+    external: false
+  db_home:
+    external: false
+  redis:
+    external: false
